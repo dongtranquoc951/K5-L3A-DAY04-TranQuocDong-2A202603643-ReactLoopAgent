@@ -1,10 +1,13 @@
-"""Bốn provider cùng một interface. Không chứa agent loop."""
+"""Các provider cùng một interface. Không chứa agent loop."""
 import json
 import os
+from pathlib import Path
+import re
 import urllib.error
 import urllib.request
 
 CONFIG = {
+    'xkiro': ('XKIRO_API_KEY', 'https://api.xkiro.com/v1/chat/completions'),
     'openai': ('OPENAI_API_KEY', 'https://api.openai.com/v1/chat/completions'),
     'gemini': ('GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'),
     'openrouter': ('OPENROUTER_API_KEY', 'https://openrouter.ai/api/v1/chat/completions'),
@@ -12,16 +15,39 @@ CONFIG = {
 }
 
 
+def load_env(path=None):
+    """Nạp KEY=value hoặc export KEY=value; biến shell có độ ưu tiên cao hơn."""
+    path = Path(path) if path is not None else Path(__file__).resolve().parent / '.env'
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding='utf-8-sig').splitlines():
+        match = re.match(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$', line)
+        if not match:
+            continue
+        name, value = match.groups()
+        value = value.strip()
+        if value.startswith(('"', "'")):
+            end = value.find(value[0], 1)
+            if end < 0:
+                raise ValueError(f'Giá trị {name} trong .env thiếu dấu đóng nháy.')
+            value = value[1:end]
+        else:
+            value = re.split(r'\s+#', value, maxsplit=1)[0].rstrip()
+        os.environ.setdefault(name, value)
+
+
 def post_json(url, headers, payload):
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', **headers})
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={
+        'Content-Type': 'application/json', 'Accept': 'application/json',
+        'User-Agent': 'StatusAgentLab/1.0', **headers})
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
         # Do not print response bodies: they may contain account or request data.
-        raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
+        raise RuntimeError(f'Provider trả HTTP {exc.code}.') from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
+        raise RuntimeError('Không kết nối được provider.') from exc
 
 
 class Provider:
@@ -31,6 +57,7 @@ class Provider:
     cần được append nguyên vẹn; tool result có role, tool_call_id, content (JSON string).
     """
     def __init__(self, name, model):
+        load_env()
         if name not in CONFIG:
             raise ValueError(f'Provider không hợp lệ: {name}')
         if not model:
